@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 - 2017 Anton Tananaev (anton@traccar.org)
+ * Copyright 2012 - 2020 Anton Tananaev (anton@traccar.org)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 package org.traccar.client;
 
+import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
 import android.app.Notification;
 import android.app.PendingIntent;
@@ -26,20 +27,27 @@ import android.os.Build;
 import android.os.IBinder;
 import androidx.core.app.NotificationCompat;
 import androidx.core.content.ContextCompat;
+
+import android.os.PowerManager;
+import android.preference.PreferenceManager;
 import android.util.Log;
 
 public class TrackingService extends Service {
 
+    public static final String ACTION_STARTED = "org.traccar.action.SERVICE_STARTED";
+    public static final String ACTION_STOPPED = "org.traccar.action.SERVICE_STOPPED";
+
     private static final String TAG = TrackingService.class.getSimpleName();
     private static final int NOTIFICATION_ID = 1;
 
+    private PowerManager.WakeLock wakeLock;
     private TrackingController trackingController;
 
     private static Notification createNotification(Context context) {
         NotificationCompat.Builder builder = new NotificationCompat.Builder(context, MainApplication.PRIMARY_CHANNEL)
                 .setSmallIcon(R.drawable.ic_stat_notify)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
-                .setCategory(Notification.CATEGORY_SERVICE);
+                .setCategory(NotificationCompat.CATEGORY_SERVICE);
         Intent intent;
         if (!BuildConfig.HIDDEN_APP) {
             intent = new Intent(context, MainActivity.class);
@@ -73,14 +81,23 @@ public class TrackingService extends Service {
         }
     }
 
+    @SuppressLint("WakelockTimeout")
     @Override
     public void onCreate() {
         Log.i(TAG, "service create");
+        sendBroadcast(new Intent(ACTION_STARTED));
         StatusActivity.addMessage(getString(R.string.status_service_create));
 
         startForeground(NOTIFICATION_ID, createNotification(this));
 
         if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+
+            if (PreferenceManager.getDefaultSharedPreferences(this).getBoolean(MainFragment.KEY_WAKELOCK, true)) {
+                PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, getClass().getName());
+                wakeLock.acquire();
+            }
+
             trackingController = new TrackingController(this);
             trackingController.start();
         }
@@ -107,10 +124,14 @@ public class TrackingService extends Service {
     @Override
     public void onDestroy() {
         Log.i(TAG, "service destroy");
+        sendBroadcast(new Intent(ACTION_STOPPED));
         StatusActivity.addMessage(getString(R.string.status_service_destroy));
 
         stopForeground(true);
 
+        if (wakeLock != null && wakeLock.isHeld()) {
+            wakeLock.release();
+        }
         if (trackingController != null) {
             trackingController.stop();
         }

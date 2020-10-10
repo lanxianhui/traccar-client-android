@@ -18,7 +18,6 @@ package org.traccar.client;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Handler;
-import android.os.PowerManager;
 import android.preference.PreferenceManager;
 import android.util.Log;
 
@@ -26,7 +25,6 @@ public class TrackingController implements PositionProvider.PositionListener, Ne
 
     private static final String TAG = TrackingController.class.getSimpleName();
     private static final int RETRY_DELAY = 30 * 1000;
-    private static final int WAKE_LOCK_TIMEOUT = 120 * 1000;
 
     private boolean isOnline;
     private boolean isWaiting;
@@ -36,22 +34,11 @@ public class TrackingController implements PositionProvider.PositionListener, Ne
     private SharedPreferences preferences;
 
     private String url;
+    private boolean buffer;
 
     private PositionProvider positionProvider;
     private DatabaseHelper databaseHelper;
     private NetworkManager networkManager;
-
-    private PowerManager.WakeLock wakeLock;
-
-    private void lock() {
-        wakeLock.acquire(WAKE_LOCK_TIMEOUT);
-    }
-
-    private void unlock() {
-        if (wakeLock.isHeld()) {
-            wakeLock.release();
-        }
-    }
 
     public TrackingController(Context context) {
         this.context = context;
@@ -63,9 +50,7 @@ public class TrackingController implements PositionProvider.PositionListener, Ne
         isOnline = networkManager.isOnline();
 
         url = preferences.getString(MainFragment.KEY_URL, context.getString(R.string.settings_url_default_value));
-
-        PowerManager powerManager = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
-        wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, getClass().getName());
+        buffer = preferences.getBoolean(MainFragment.KEY_BUFFER, true);
     }
 
     public void start() {
@@ -94,7 +79,11 @@ public class TrackingController implements PositionProvider.PositionListener, Ne
     public void onPositionUpdate(Position position) {
         StatusActivity.addMessage(context.getString(R.string.status_location_update));
         if (position != null) {
-            write(position);
+            if (buffer) {
+                write(position);
+            } else {
+                send(position);
+            }
         }
     }
 
@@ -133,7 +122,6 @@ public class TrackingController implements PositionProvider.PositionListener, Ne
 
     private void write(Position position) {
         log("write", position);
-        lock();
         databaseHelper.insertPositionAsync(position, new DatabaseHelper.DatabaseHandler<Void>() {
             @Override
             public void onComplete(boolean success, Void result) {
@@ -143,14 +131,12 @@ public class TrackingController implements PositionProvider.PositionListener, Ne
                         isWaiting = false;
                     }
                 }
-                unlock();
             }
         });
     }
 
     private void read() {
         log("read", null);
-        lock();
         databaseHelper.selectPositionAsync(new DatabaseHelper.DatabaseHandler<Position>() {
             @Override
             public void onComplete(boolean success, Position result) {
@@ -167,14 +153,12 @@ public class TrackingController implements PositionProvider.PositionListener, Ne
                 } else {
                     retry();
                 }
-                unlock();
             }
         });
     }
 
     private void delete(Position position) {
         log("delete", position);
-        lock();
         databaseHelper.deletePositionAsync(position.getId(), new DatabaseHelper.DatabaseHandler<Void>() {
             @Override
             public void onComplete(boolean success, Void result) {
@@ -183,25 +167,26 @@ public class TrackingController implements PositionProvider.PositionListener, Ne
                 } else {
                     retry();
                 }
-                unlock();
             }
         });
     }
 
     private void send(final Position position) {
         log("send", position);
-        lock();
         String request = ProtocolFormatter.formatRequest(url, position);
         RequestManager.sendRequestAsync(request, new RequestManager.RequestHandler() {
             @Override
             public void onComplete(boolean success) {
                 if (success) {
-                    delete(position);
+                    if (buffer) {
+                        delete(position);
+                    }
                 } else {
                     StatusActivity.addMessage(context.getString(R.string.status_send_fail));
-                    retry();
+                    if (buffer) {
+                        retry();
+                    }
                 }
-                unlock();
             }
         });
     }
